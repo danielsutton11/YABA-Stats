@@ -1,0 +1,28 @@
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+
+spring:
+  application:
+    name: yaba-stats
+  threads:
+    virtual:
+      enabled: true
+  flyway:
+    enabled: true
+
+yaba:
+  # Shared secret the Google Sheet sends in the X-Api-Key header. Required.
+  api-secret: ${YABA_API_SECRET:}
+  torn-base: ${TORN_BASE:https://api.torn.com/v2}
+  bsp-base: ${BSP_BASE:https://www.lol-manager.com/api/battlestats}
+  bsp-version: ${BSP_VERSION:9.4.7}
+  # Calls per minute per PLAYER (keys of the same player share Torn's 100/min limit).
+  rpm-per-player: ${RPM_PER_PLAYER:80}
+  stats-cache-hours: ${STATS_CACHE_HOURS:20}
+  bsp-cache-days: ${BSP_CACHE_DAYS:5}
+  bsp-per-second: ${BSP_PER_SECOND:4}
+  # Nightly YABA refresh (Spring cron: sec min hour day month weekday), Europe/London time.
+  nightly-cron: ${NIGHTLY_CRON:0 0 1 * * *}
+  zone: ${YABA_ZONE:Europe/London}
+  comment: yaba-stats
