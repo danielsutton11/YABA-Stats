@@ -15,13 +15,14 @@ yaba:
   # Shared secret the Google Sheet sends in the X-Api-Key header. Required.
   api-secret: ${YABA_API_SECRET:}
   torn-base: ${TORN_BASE:https://api.torn.com/v2}
-  bsp-base: ${BSP_BASE:https://www.lol-manager.com/api/battlestats}
-  bsp-version: ${BSP_VERSION:9.4.7}
+  ffs-base: ${FFS_BASE:https://ffscouter.com/api/v1}
   # Calls per minute per PLAYER (keys of the same player share Torn's 100/min limit).
   rpm-per-player: ${RPM_PER_PLAYER:80}
   stats-cache-hours: ${STATS_CACHE_HOURS:20}
-  bsp-cache-days: ${BSP_CACHE_DAYS:5}
-  bsp-per-second: ${BSP_PER_SECOND:4}
+  # Reuse FFScouter estimates fetched within this many hours (batched: 100 players per call).
+  ffs-cache-hours: ${FFS_CACHE_HOURS:20}
+  ffs-batch-size: ${FFS_BATCH_SIZE:100}
+  ffs-per-second: ${FFS_PER_SECOND:1}
   # Nightly YABA refresh (Spring cron: sec min hour day month weekday), Europe/London time.
   nightly-cron: ${NIGHTLY_CRON:0 0 1 * * *}
   zone: ${YABA_ZONE:Europe/London}

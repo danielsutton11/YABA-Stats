@@ -14,8 +14,8 @@ public class ReportService {
     public record Period(Long xan, Double act, Long rw, Long rev) { }
 
     public record Member(long factionId, String factionName, long id, String name, Integer level, String position,
-                         Integer daysInFaction, String lastAction, Period m1, Period m3,
-                         Long bs, String bsAt, String bspNote, String note) { }
+                         Integer daysInFaction, String lastAction, Period m1, Period m3, Long elo,
+                         Long bs, String bsSource, String bsAt, String estNote, String note) { }
 
     public record FactionInfo(long id, String name, String type, boolean yaba, Long leaderId, String leaderName,
                               Long coLeaderId, String coLeaderName, Integer members, Integer capacity,
@@ -55,11 +55,12 @@ public class ReportService {
     }
 
     static Member member(MemberRow r) {
-        String bspNote = r.bspAt() == null ? null : (r.tbs() != null && r.tbs() > 0 ? null : "BSP: no prediction");
+        boolean hasEst = r.bsEstimate() != null && r.bsEstimate() > 0;
+        String estNote = r.bsFetchedAt() != null && !hasEst ? "No FFScouter estimate" : null;
         return new Member(r.factionId(), r.factionName(), r.id(), r.name(), r.level(), r.position(), r.daysInFaction(),
-                r.lastAction(), period(r.now(), r.d30()), period(r.now(), r.d90()),
-                r.tbs() != null && r.tbs() > 0 ? r.tbs() : null,
-                r.bspAt() == null ? null : r.bspAt().toLocalDate().toString(), bspNote, r.error());
+                r.lastAction(), period(r.now(), r.d30()), period(r.now(), r.d90()), r.elo(),
+                hasEst ? r.bsEstimate() : null, hasEst ? r.bsSource() : null,
+                r.bsFetchedAt() == null ? null : r.bsFetchedAt().toLocalDate().toString(), estNote, r.error());
     }
 
     /** now − then for xantaken, timeplayed (→ hours), rankedwarhits, revives; null if either side is missing. */

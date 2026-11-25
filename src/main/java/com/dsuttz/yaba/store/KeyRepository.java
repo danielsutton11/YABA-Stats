@@ -12,10 +12,10 @@ import java.util.Optional;
 public class KeyRepository {
 
     public record StoredKey(long id, String key, Long ownerTornId, boolean healthy, String lastError,
-                            boolean bspActive, OffsetDateTime bspExpiresAt, OffsetDateTime bspCheckedAt) { }
+                            boolean ffsActive, OffsetDateTime ffsCheckedAt, String ffsError) { }
 
     // only rows already encrypted are read; plain-text rows are converted at start-up (KeyEncryptionMigrator)
-    private static final String COLS = "id, key_enc, owner_torn_id, healthy, last_error, bsp_active, bsp_expires_at, bsp_checked_at";
+    private static final String COLS = "id, key_enc, owner_torn_id, healthy, last_error, ffs_active, ffs_checked_at, ffs_error";
     private static final String ENC = " key_enc IS NOT NULL ";
     private final JdbcClient jdbc;
     private final KeyCrypto crypto;
@@ -33,9 +33,10 @@ public class KeyRepository {
         return jdbc.sql("SELECT " + COLS + " FROM api_key WHERE healthy AND" + ENC + "ORDER BY id").query(this::map).list();
     }
 
-    public List<StoredKey> bspActive() {
-        return jdbc.sql("SELECT " + COLS + " FROM api_key WHERE healthy AND bsp_active AND" + ENC
-                + "AND (bsp_expires_at IS NULL OR bsp_expires_at > now()) ORDER BY id").query(this::map).list();
+    /** Healthy keys registered with FFScouter. */
+    public List<StoredKey> ffsActive() {
+        return jdbc.sql("SELECT " + COLS + " FROM api_key WHERE healthy AND ffs_active AND" + ENC + "ORDER BY id")
+                .query(this::map).list();
     }
 
     public Optional<StoredKey> find(String key) {
@@ -55,16 +56,16 @@ public class KeyRepository {
         jdbc.sql("UPDATE api_key SET healthy = FALSE, last_error = ? WHERE id = ?").params(reason, id).update();
     }
 
-    public void setBsp(long id, boolean active, OffsetDateTime expires) {
-        jdbc.sql("UPDATE api_key SET bsp_active = ?, bsp_expires_at = ?, bsp_checked_at = now() WHERE id = ?")
-                .params(active, expires, id).update();
+    public void setFfs(long id, boolean active, String error) {
+        jdbc.sql("UPDATE api_key SET ffs_active = ?, ffs_error = ?, ffs_checked_at = now() WHERE id = ?")
+                .params(active, error, id).update();
     }
 
     private StoredKey map(java.sql.ResultSet rs, int i) throws java.sql.SQLException {
         long ownerRaw = rs.getLong("owner_torn_id");
         Long owner = rs.wasNull() ? null : ownerRaw;
         return new StoredKey(rs.getLong("id"), crypto.decrypt(rs.getString("key_enc")), owner,
-                rs.getBoolean("healthy"), rs.getString("last_error"), rs.getBoolean("bsp_active"),
-                rs.getObject("bsp_expires_at", OffsetDateTime.class), rs.getObject("bsp_checked_at", OffsetDateTime.class));
+                rs.getBoolean("healthy"), rs.getString("last_error"), rs.getBoolean("ffs_active"),
+                rs.getObject("ffs_checked_at", OffsetDateTime.class), rs.getString("ffs_error"));
     }
 }

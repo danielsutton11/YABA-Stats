@@ -1,6 +1,6 @@
 package com.dsuttz.yaba.collect;
 
-import com.dsuttz.yaba.bsp.BspClient;
+import com.dsuttz.yaba.ffs.FfsClient;
 import com.dsuttz.yaba.config.YabaProperties;
 import com.dsuttz.yaba.store.DataRepository;
 import com.dsuttz.yaba.store.DataRepository.RosterMember;
@@ -25,7 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Runs collections: rosters → personal stats (now / 30d / 90d) → BSP.
+ * Runs collections: rosters → personal stats (now / 30d / 90d, plus current Elo) → FFScouter estimates.
+ * An "elo" run fetches only current Elo for chosen factions.
  * One YABA run and one run per prospective faction can run at the same time; they share the
  * KeyPool, so Torn's per-player limit holds across all of them.
  */
@@ -39,7 +40,7 @@ public class CollectorService {
     private static final int STAT_CONCURRENCY = 32;
 
     private final TornClient torn;
-    private final BspClient bsp;
+    private final FfsClient ffs;
     private final KeyPool pool;
     private final KeyRepository keys;
     private final DataRepository data;
@@ -50,10 +51,10 @@ public class CollectorService {
     private Long yabaRunId = null;
     private final Map<Long, Long> prospectRuns = new ConcurrentHashMap<>();
 
-    public CollectorService(TornClient torn, BspClient bsp, KeyPool pool, KeyRepository keys, DataRepository data,
+    public CollectorService(TornClient torn, FfsClient ffs, KeyPool pool, KeyRepository keys, DataRepository data,
                             RunRepository runs, YabaProperties props) {
         this.torn = torn;
-        this.bsp = bsp;
+        this.ffs = ffs;
         this.pool = pool;
         this.keys = keys;
         this.data = data;
@@ -95,6 +96,23 @@ public class CollectorService {
         return runs.find(id).orElseThrow();
     }
 
+    /** Fetches only current Elo for the given factions' members (no roster, stats or estimates). */
+    public synchronized RunRepository.Run startElo(List<Long> factionIds) {
+        if (factionIds == null || factionIds.isEmpty()) throw new IllegalStateException("No factions given");
+        if (keys.healthy().isEmpty()) throw new IllegalStateException("No healthy Torn API keys — add keys from the sheet");
+        long id = runs.start("elo", null, null, false);
+        exec.submit(() -> {
+            try {
+                pool.reload();
+                runs.finish(id, "done", eloOnly(id, factionIds));
+            } catch (Exception e) {
+                log.error("Elo run {} failed", id, e);
+                runs.finish(id, "failed", "FAILED: " + e.getMessage());
+            }
+        });
+        return runs.find(id).orElseThrow();
+    }
+
     // ------------------------------------------------------------------ the run
 
     private void execute(long runId, List<Long> factionIds, boolean rosterOnly, Runnable onDone) {
@@ -104,7 +122,7 @@ public class CollectorService {
             notes.add(roster(runId, factionIds));
             if (!rosterOnly) {
                 notes.add(stats(runId, factionIds));
-                notes.add(bspPhase(runId, factionIds));
+                notes.add(ffsPhase(runId, factionIds));
             }
             runs.finish(runId, "done", String.join(" · ", notes));
             log.info("Run {} done: {}", runId, notes);
@@ -173,15 +191,16 @@ public class CollectorService {
         List<DataRepository.StatNeed> needs = data.statNeeds(factionIds, props.statsCacheHours());
         long now = Instant.now().getEpochSecond();
         long ts30 = now - 30L * 86400, ts90 = now - 90L * 86400;
-        record Task(long id, Slot slot, Long ts) { }
+        record Task(long id, Slot slot, Long ts) { }   // slot null = Elo only
         List<Task> tasks = new ArrayList<>();
         for (var n : needs) {
-            if (n.now()) tasks.add(new Task(n.tornId(), Slot.NOW, null));
+            if (n.now()) tasks.add(new Task(n.tornId(), Slot.NOW, null));        // also returns Elo
+            else if (n.elo()) tasks.add(new Task(n.tornId(), null, null));      // cached stats, Elo missing
             if (n.d30()) tasks.add(new Task(n.tornId(), Slot.D30, ts30));
             if (n.d90()) tasks.add(new Task(n.tornId(), Slot.D90, ts90));
         }
         int total = tasks.size();
-        data.clearErrors(needs.stream().map(DataRepository.StatNeed::tornId).toList());
+        data.clearErrors(needs.stream().filter(n -> n.now() || n.d30() || n.d90()).map(DataRepository.StatNeed::tornId).toList());
         runs.progress(runId, "stats", 0, total);
         if (total == 0) return "Stats: all cached";
 
@@ -194,9 +213,16 @@ public class CollectorService {
             inFlight.acquire();
             fs.add(exec.submit(() -> {
                 try {
-                    String path = "/user/" + t.id() + "/personalstats?stat=" + STAT_LIST
+                    if (t.slot() == null) {                       // Elo only
+                        data.saveElo(t.id(), findStat(call("/user/" + t.id() + "/personalstats?stat=elo"), "elo"));
+                        return null;
+                    }
+                    boolean withElo = t.slot() == Slot.NOW;
+                    String path = "/user/" + t.id() + "/personalstats?stat=" + STAT_LIST + (withElo ? ",elo" : "")
                             + (t.ts() != null ? "&timestamp=" + t.ts() : "");
-                    Long[] vals = extractStats(call(path));
+                    JsonNode json = call(path);
+                    if (withElo) data.saveElo(t.id(), findStat(json, "elo"));
+                    Long[] vals = extractStats(json);
                     if (Arrays.stream(vals).allMatch(Objects::isNull)) {
                         data.saveSlotError(t.id(), t.slot(), "No personal stats returned");
                         errors.incrementAndGet();
@@ -206,7 +232,8 @@ public class CollectorService {
                         data.saveSlot(t.id(), t.slot(), vals);
                     }
                 } catch (TornApiException e) {
-                    data.saveSlotError(t.id(), t.slot(), "API " + e.code() + ": " + e.getMessage());
+                    if (t.slot() == null) data.saveElo(t.id(), null);
+                    else data.saveSlotError(t.id(), t.slot(), "API " + e.code() + ": " + e.getMessage());
                     errors.incrementAndGet();
                 } catch (IllegalStateException e) {   // no keys left
                     abort.set(true);
@@ -251,59 +278,113 @@ public class CollectorService {
         return out;
     }
 
-    // ------------------------------------------------------------------ phase 3: BSP
+    /** One named personal stat from a personalstats response (null if absent). */
+    static Long findStat(JsonNode json, String name) {
+        JsonNode root = json.has("personalstats") ? json.get("personalstats") : json;
+        Deque<JsonNode> stack = new ArrayDeque<>(List.of(root));
+        while (!stack.isEmpty()) {
+            JsonNode n = stack.pop();
+            if (n.isArray()) {
+                for (JsonNode x : n) {
+                    if (name.equals(x.path("name").asText(null)) && x.has("value")) return x.get("value").asLong();
+                    stack.push(x);
+                }
+            } else if (n.isObject()) {
+                JsonNode v = n.get(name);
+                if (v != null && v.isNumber()) return v.asLong();
+                n.forEach(c -> { if (c.isContainerNode()) stack.push(c); });
+            }
+        }
+        return null;
+    }
 
-    private String bspPhase(long runId, List<Long> factionIds) throws InterruptedException {
-        refreshBspSubscriptions();
-        List<String> bspKeys = keys.bspActive().stream().map(KeyRepository.StoredKey::key).toList();
-        if (bspKeys.isEmpty()) return "BSP: no key with an active subscription";
-        List<Long> ids = data.bspNeeds(factionIds, props.bspCacheDays());
+    /** Elo-only run: one call per member whose Elo is missing or older than the stats cache. */
+    private String eloOnly(long runId, List<Long> factionIds) throws InterruptedException {
+        List<Long> ids = data.eloNeeds(factionIds, props.statsCacheHours());
         int total = ids.size();
-        runs.progress(runId, "bsp", 0, total);
-        if (total == 0) return "BSP: all cached";
-
-        long gapMs = Math.max(50, 1000L / Math.max(1, props.bspPerSecond()));
-        Semaphore inFlight = new Semaphore(8);
-        AtomicInteger done = new AtomicInteger(), found = new AtomicInteger(), failStreak = new AtomicInteger();
+        runs.progress(runId, "elo", 0, total);
+        if (total == 0) return "Elo: all up to date";
+        Semaphore inFlight = new Semaphore(STAT_CONCURRENCY);
+        AtomicInteger done = new AtomicInteger(), errors = new AtomicInteger();
         List<Future<?>> fs = new ArrayList<>();
-        int i = 0;
         for (long id : ids) {
-            if (failStreak.get() >= 25) break;
-            String key = bspKeys.get(i++ % bspKeys.size());
             inFlight.acquire();
             fs.add(exec.submit(() -> {
                 try {
-                    var p = bsp.predict(key, id);
-                    if (p.isEmpty()) {
-                        failStreak.incrementAndGet();
-                    } else {
-                        failStreak.set(0);
-                        var pr = p.get();
-                        // failures (result 0/4) are cached as "no prediction" so we don't re-ask every night
-                        data.saveBsp(id, pr.usable() ? pr.tbs() : 0, pr.score(), pr.result());
-                        if (pr.usable()) found.incrementAndGet();
-                    }
+                    data.saveElo(id, findStat(call("/user/" + id + "/personalstats?stat=elo"), "elo"));
+                } catch (TornApiException e) {
+                    data.saveElo(id, null);
+                    errors.incrementAndGet();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 } finally {
                     inFlight.release();
                     int d = done.incrementAndGet();
-                    if (d % 25 == 0 || d == total) runs.progress(runId, "bsp", d, total);
+                    if (d % 25 == 0 || d == total) runs.progress(runId, "elo", d, total);
                 }
                 return null;
             }));
-            Thread.sleep(gapMs);
         }
         waitAll(fs);
-        String msg = "BSP " + found.get() + "/" + total + " predicted";
-        return failStreak.get() >= 25 ? msg + " (BSP stopped answering — rest kept from cache)" : msg;
+        return "Elo " + total + " members" + (errors.get() > 0 ? " (" + errors.get() + " errors)" : "");
     }
 
-    /** Re-checks each key's BSP subscription at most every 12 hours. */
-    public void refreshBspSubscriptions() {
+    // ------------------------------------------------------------------ phase 3: FFScouter
+
+    private String ffsPhase(long runId, List<Long> factionIds) throws InterruptedException {
+        refreshFfsKeys();
+        List<String> ffsKeys = keys.ffsActive().stream().map(KeyRepository.StoredKey::key).toList();
+        if (ffsKeys.isEmpty()) return "Estimates: no saved key is registered with FFScouter";
+        List<Long> ids = data.estimateNeeds(factionIds, props.ffsCacheHours());
+        int total = ids.size();
+        runs.progress(runId, "estimates", 0, total);
+        if (total == 0) return "Estimates: all cached";
+
+        int batch = Math.max(1, props.ffsBatchSize());
+        long gapMs = Math.max(100, 1000L / Math.max(1, props.ffsPerSecond()));
+        int done = 0, found = 0, failStreak = 0, k = 0;
+        String lastError = null;
+        for (int i = 0; i < ids.size(); i += batch) {
+            List<Long> chunk = ids.subList(i, Math.min(ids.size(), i + batch));
+            FfsClient.Result r = ffs.getStats(ffsKeys.get(k++ % ffsKeys.size()), chunk);
+            if (!r.ok()) {
+                lastError = r.error();
+                if (++failStreak >= 3) break;
+                i -= batch;                                   // retry this chunk with the next key
+                Thread.sleep(gapMs * 3);
+                continue;
+            }
+            failStreak = 0;
+            Map<Long, FfsClient.Estimate> byId = new HashMap<>();
+            r.estimates().forEach(e -> byId.put(e.playerId(), e));
+            for (long id : chunk) {
+                FfsClient.Estimate e = byId.get(id);
+                // players FFScouter knows nothing about are cached as "no estimate" too
+                data.saveEstimate(id, e == null ? null : e.bsEstimate(), e == null ? null : e.fairFight(),
+                        e == null ? null : e.source(), e == null ? null : e.updated());
+                if (e != null && e.bsEstimate() != null) found++;
+            }
+            done += chunk.size();
+            runs.progress(runId, "estimates", done, total);
+            Thread.sleep(gapMs);
+        }
+        String msg = "Estimates " + found + "/" + total + " from FFScouter";
+        return failStreak >= 3 ? msg + " (FFScouter stopped answering: " + lastError + ")" : msg;
+    }
+
+    /** Re-checks which saved keys are registered with FFScouter, at most every 12 hours per key. */
+    public void refreshFfsKeys() {
         OffsetDateTime cutoff = OffsetDateTime.now().minusHours(12);
         for (KeyRepository.StoredKey k : keys.healthy()) {
-            if (k.bspCheckedAt() != null && k.bspCheckedAt().isAfter(cutoff)) continue;
-            bsp.subscription(k.key()).ifPresent(s -> keys.setBsp(k.id(), s.active(), s.expiresAt()));
+            if (k.ffsCheckedAt() != null && k.ffsCheckedAt().isAfter(cutoff)) continue;
+            checkFfsKey(k);
         }
+    }
+
+    /** One FFScouter check for a key (looks up the key's own player). */
+    public void checkFfsKey(KeyRepository.StoredKey k) {
+        FfsClient.Result r = ffs.check(k.key(), k.ownerTornId() != null ? k.ownerTornId() : 1L);
+        keys.setFfs(k.id(), r.ok(), r.ok() ? null : r.error());
     }
 
     // ------------------------------------------------------------------ Torn call with retries

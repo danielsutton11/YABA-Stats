@@ -7,20 +7,21 @@ Google Sheet. Spring Boot 3.5 / Java 21 / PostgreSQL, deployed on Railway.
 
 - **Nightly at 01:00 UK time:** for every YABA faction, fetches the roster and then each member's Torn
   personal stats (`xantaken`, `timeplayed`, `rankedwarhits`, `revives`) for now, 30 days ago and
-  90 days ago, then a BSP (Battle Stats Predictor) estimate for each member.
-- **On demand:** the sheet can start a full run, a quick roster-only refresh, or a check of one
-  prospective faction.
+  90 days ago. It also fetches each member's current Elo, which comes back on the same "now" call, and an
+  FFScouter battle stat estimate.
+- **On demand:** the sheet can start a full run, a quick roster-only refresh, an Elo-only run for chosen
+  factions, or a check of one prospective faction.
 - **Rate limits:** Torn's limit is per player, so keys are grouped by the player who owns them. Each
   player gets 80 calls a minute (`RPM_PER_PLAYER`), shared by every run that's going.
-- **Caching:** member stats fetched in the last 20 hours and BSP results from the last 5 days are
-  reused. If a run is interrupted, for example by a redeploy, the next run picks up from there.
+- **Caching:** member stats, Elo and FFScouter estimates fetched in the last 20 hours are reused. If a run is interrupted, for example by a redeploy, the next run picks up from there.
 - **Fallen players:** members whose Torn status is Fallen are skipped. They aren't fetched, aren't counted in member
   totals, and don't appear in reports. The status comes from the faction roster, so this costs no extra calls.
-- **BSP:** only keys with an active BSP subscription are used for estimates. Subscriptions are
-  re-checked every 12 hours.
+- **FFScouter:** saved Torn keys that are registered on ffscouter.com are found automatically and
+  re-checked every 12 hours. Estimates are fetched 100 players per call. Premium keys get FFScouter's
+  premium and spy data where it exists.
 
 For 74 factions (~5,900 members), 5 keys from 5 players and an empty cache, a run takes roughly
-45 minutes for stats plus about 25 minutes for BSP.
+45 minutes for stats plus a minute or two for FFScouter estimates.
 
 ## Deploy on Railway
 
@@ -61,10 +62,10 @@ encrypts them on its next start and blanks the plain-text copy.
 | `NIGHTLY_CRON` | `0 0 1 * * *` | Spring cron (sec min hour day month weekday) |
 | `YABA_ZONE` | `Europe/London` | Time zone for the cron (follows BST/GMT) |
 | `RPM_PER_PLAYER` | `80` | Torn calls per minute per player (Torn allows 100) |
-| `STATS_CACHE_HOURS` | `20` | Reuse member stats fetched within this many hours |
-| `BSP_CACHE_DAYS` | `5` | Reuse BSP estimates for this many days |
-| `BSP_PER_SECOND` | `4` | BSP lookups per second |
-| `BSP_VERSION` | `9.4.7` | Version string BSP's API expects |
+| `STATS_CACHE_HOURS` | `20` | Reuse member stats and Elo fetched within this many hours |
+| `FFS_CACHE_HOURS` | `20` | Reuse FFScouter estimates fetched within this many hours |
+| `FFS_BATCH_SIZE` | `100` | Players per FFScouter call |
+| `FFS_PER_SECOND` | `1` | FFScouter calls per second |
 
 ## API (used by the sheet)
 
@@ -74,12 +75,13 @@ Every `/api/**` call needs the header `X-Api-Key: <YABA_API_SECRET>`.
 |---|---|---|
 | GET | `/health` | Railway health check (no key needed) |
 | GET | `/api/status` | Last full run, running jobs, key counts |
-| POST | `/api/keys` `{"keys":[...]}` | Add keys (merged; each is checked against Torn and BSP) |
-| GET | `/api/keys` | Masked keys with owner, health and BSP status |
+| POST | `/api/keys` `{"keys":[...]}` | Add keys (merged; each is checked against Torn and FFScouter) |
+| GET | `/api/keys` | Masked keys with owner, health and FFScouter status |
 | PUT | `/api/factions` `[{"id":9528,"type":"Revive"}, ...]` | Replace the YABA list (sheet order kept) |
 | POST | `/api/runs/yaba[?rosterOnly=true]` | Start a run now |
+| POST | `/api/runs/elo` `{"factionIds":[...]}` | Fetch current Elo now for these factions' members |
 | GET | `/api/runs/{id}` | Progress of a run |
-| GET | `/api/report` | YABA factions and every member's 1M/3M figures and BSP estimate |
+| GET | `/api/report` | YABA factions and every member's 1M/3M figures, Elo and FFScouter estimate |
 | GET | `/api/lookup?q=name-or-id` | Faction search |
 | POST | `/api/prospects` `{"id":9528,"type":"Combat"}` | Check a prospective faction |
 | GET | `/api/prospects/{id}` | Run status and members for that faction |
@@ -93,7 +95,6 @@ DATABASE_URL=postgresql://user:pass@localhost:5432/yaba YABA_API_SECRET=dev java
 
 ## Notes
 
-- BSP is called the same way the BSP userscript does, with subscribers' Torn keys sent to
-  lol-manager.com. Check with TDup [2660552] that bulk server-side use is OK.
+- FFScouter's terms say estimates belong to FFScouter. Check them before sharing the numbers widely.
 - Keys that Torn rejects (wrong, disabled, paused) are taken out of use automatically. Their reason
-  shows under YABA Stats → Check API keys & BSP subscriptions.
+  shows under YABA Stats → Settings → Check keys & FFScouter.

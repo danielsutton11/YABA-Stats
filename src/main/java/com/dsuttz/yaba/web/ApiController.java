@@ -1,6 +1,5 @@
 package com.dsuttz.yaba.web;
 
-import com.dsuttz.yaba.bsp.BspClient;
 import com.dsuttz.yaba.collect.CollectorService;
 import com.dsuttz.yaba.report.ReportService;
 import com.dsuttz.yaba.store.DataRepository;
@@ -28,18 +27,16 @@ public class ApiController {
     private final DataRepository data;
     private final RunRepository runs;
     private final TornClient torn;
-    private final BspClient bsp;
     private final KeyPool pool;
 
     public ApiController(CollectorService collector, ReportService reports, KeyRepository keys, DataRepository data,
-                         RunRepository runs, TornClient torn, BspClient bsp, KeyPool pool) {
+                         RunRepository runs, TornClient torn, KeyPool pool) {
         this.collector = collector;
         this.reports = reports;
         this.keys = keys;
         this.data = data;
         this.runs = runs;
         this.torn = torn;
-        this.bsp = bsp;
         this.pool = pool;
     }
 
@@ -62,7 +59,7 @@ public class ApiController {
         out.put("keys", Map.of("total", all.size(),
                 "healthy", all.stream().filter(KeyRepository.StoredKey::healthy).count(),
                 "players", players,
-                "bspActive", keys.bspActive().size()));
+                "ffsActive", keys.ffsActive().size()));
         out.put("yabaFactions", data.yabaFactions().size());
         return out;
     }
@@ -71,7 +68,7 @@ public class ApiController {
 
     public record KeysRequest(List<String> keys) { }
 
-    /** Adds keys to the saved ones (never replaces). Each key is checked against Torn and BSP. */
+    /** Adds keys to the saved ones (never replaces). Each key is checked against Torn and FFScouter. */
     @PostMapping("/api/keys")
     public Map<String, Object> addKeys(@RequestBody KeysRequest req) {
         List<Map<String, Object>> report = new ArrayList<>();
@@ -90,10 +87,10 @@ public class ApiController {
                 line.put("owner", owner);
                 line.put("status", existed ? "already saved" : "added");
                 if (existed) already++; else added++;
-                keys.find(k).ifPresent(sk -> bsp.subscription(k).ifPresent(s -> {
-                    keys.setBsp(sk.id(), s.active(), s.expiresAt());
-                    line.put("bsp", s.active() ? "active" + (s.expiresAt() != null ? " until " + s.expiresAt().toLocalDate() : "") : "none");
-                }));
+                keys.find(k).ifPresent(sk -> {
+                    collector.checkFfsKey(sk);
+                    keys.find(k).ifPresent(after -> line.put("ffs", after.ffsActive() ? "registered" : "not registered"));
+                });
             } catch (TornApiException e) {
                 line.put("status", "rejected: " + e.getMessage());
             }
@@ -110,7 +107,7 @@ public class ApiController {
 
     @GetMapping("/api/keys")
     public Map<String, Object> listKeys() {
-        collector.refreshBspSubscriptions();
+        collector.refreshFfsKeys();
         Map<String, Object> out = new LinkedHashMap<>(keySummary());
         out.put("keys", keys.all().stream().map(k -> {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -118,7 +115,7 @@ public class ApiController {
             m.put("owner", k.ownerTornId());
             m.put("healthy", k.healthy());
             m.put("error", k.lastError());
-            m.put("bsp", k.bspActive() ? "active" + (k.bspExpiresAt() != null ? " until " + k.bspExpiresAt().toLocalDate() : "") : "none");
+            m.put("ffs", k.ffsActive() ? "registered" : "not registered" + (k.ffsError() != null ? " (" + k.ffsError() + ")" : ""));
             return m;
         }).toList());
         return out;
@@ -128,7 +125,7 @@ public class ApiController {
         List<KeyRepository.StoredKey> all = keys.all();
         long players = all.stream().filter(KeyRepository.StoredKey::healthy)
                 .map(k -> k.ownerTornId() == null ? -k.id() : k.ownerTornId()).distinct().count();
-        return Map.of("total", all.size(), "players", players, "bspActive", keys.bspActive().size());
+        return Map.of("total", all.size(), "players", players, "ffsActive", keys.ffsActive().size());
     }
 
     // ------------------------------------------------------------------ factions
@@ -144,6 +141,14 @@ public class ApiController {
     @PostMapping("/api/runs/yaba")
     public RunRepository.Run runYaba(@RequestParam(defaultValue = "false") boolean rosterOnly) {
         return collector.startYaba(rosterOnly);
+    }
+
+    public record EloRequest(List<Long> factionIds) { }
+
+    /** Fetch current Elo now for these factions' members (e.g. the top 10 ranked factions). */
+    @PostMapping("/api/runs/elo")
+    public RunRepository.Run runElo(@RequestBody EloRequest req) {
+        return collector.startElo(req.factionIds());
     }
 
     @GetMapping("/api/runs/{id}")

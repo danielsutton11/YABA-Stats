@@ -10,7 +10,7 @@ import java.time.OffsetDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
-/** Factions, members, personal-stat snapshots and BSP predictions. */
+/** Factions, members, personal-stat snapshots, Elo and FFScouter estimates. */
 @Repository
 public class DataRepository {
 
@@ -30,14 +30,14 @@ public class DataRepository {
     /** SQL condition: member is not Fallen (Fallen members are left out of everything). */
     private static final String ACTIVE = " AND COALESCE(m.status_state, '') <> 'Fallen' ";
 
-    /** Which stat slots a member still needs. */
-    public record StatNeed(long tornId, boolean now, boolean d30, boolean d90) { }
+    /** Which stat slots a member still needs (elo = current Elo is missing or stale). */
+    public record StatNeed(long tornId, boolean now, boolean d30, boolean d90, boolean elo) { }
 
     /** One joined row for reports. Stats values are null when not fetched / errored. */
     public record MemberRow(long factionId, String factionName, long id, String name, Integer level, String position,
                             Integer daysInFaction, String lastAction,
-                            Long[] now, Long[] d30, Long[] d90, String error,
-                            Long tbs, Integer bspResult, OffsetDateTime bspAt) { }
+                            Long[] now, Long[] d30, Long[] d90, String error, Long elo,
+                            Long bsEstimate, String bsSource, OffsetDateTime bsFetchedAt) { }
 
     public enum Slot {
         NOW("now", "now_at"), D30("30", "at_30"), D90("90", "at_90");
@@ -126,12 +126,13 @@ public class DataRepository {
                 SELECT m.torn_id,
                     (s.now_at IS NULL OR s.now_at < now() - make_interval(hours => ?)) AS n,
                     (s.at_30  IS NULL OR s.at_30  < now() - make_interval(hours => ?)) AS a,
-                    (s.at_90  IS NULL OR s.at_90  < now() - make_interval(hours => ?)) AS b
+                    (s.at_90  IS NULL OR s.at_90  < now() - make_interval(hours => ?)) AS b,
+                    (s.elo_at IS NULL OR s.elo_at < now() - make_interval(hours => ?)) AS e
                 FROM member m LEFT JOIN member_stats s ON s.torn_id = m.torn_id
                 WHERE m.faction_id IN (""" + ids(factionIds) + ")" + ACTIVE)
-                .params(cacheHours, cacheHours, cacheHours)
-                .query((rs, i) -> new StatNeed(rs.getLong(1), rs.getBoolean(2), rs.getBoolean(3), rs.getBoolean(4)))
-                .list().stream().filter(n -> n.now() || n.d30() || n.d90()).toList();
+                .params(cacheHours, cacheHours, cacheHours, cacheHours)
+                .query((rs, i) -> new StatNeed(rs.getLong(1), rs.getBoolean(2), rs.getBoolean(3), rs.getBoolean(4), rs.getBoolean(5)))
+                .list().stream().filter(n -> n.now() || n.d30() || n.d90() || n.elo()).toList();
     }
 
     /** Clears old error notes for members about to be refreshed (new errors are written as they happen). */
@@ -158,22 +159,41 @@ public class DataRepository {
                 .params(tornId, error, error).update();
     }
 
-    // ---------------------------------------------------------------- BSP
-
-    public List<Long> bspNeeds(Collection<Long> factionIds, int cacheDays) {
-        if (factionIds.isEmpty()) return List.of();
-        return jdbc.sql("SELECT m.torn_id FROM member m LEFT JOIN bsp_prediction b ON b.torn_id = m.torn_id "
-                        + "WHERE m.faction_id IN (" + ids(factionIds) + ") " + ACTIVE
-                        + "AND (b.fetched_at IS NULL OR b.fetched_at < now() - make_interval(days => ?))")
-                .param(cacheDays).query(Long.class).list();
+    /** Current Elo (null if Torn didn't return it); stamps elo_at either way. */
+    public void saveElo(long tornId, Long elo) {
+        jdbc.sql("""
+                INSERT INTO member_stats (torn_id, elo, elo_at) VALUES (?, ?, now())
+                ON CONFLICT (torn_id) DO UPDATE SET elo = EXCLUDED.elo, elo_at = now()""")
+                .params(tornId, elo).update();
     }
 
-    public void saveBsp(long tornId, long tbs, long score, int result) {
+    /** Members of these factions whose Elo is missing or older than cacheHours. */
+    public List<Long> eloNeeds(Collection<Long> factionIds, int cacheHours) {
+        if (factionIds.isEmpty()) return List.of();
+        return jdbc.sql("SELECT m.torn_id FROM member m LEFT JOIN member_stats s ON s.torn_id = m.torn_id "
+                        + "WHERE m.faction_id IN (" + ids(factionIds) + ") " + ACTIVE
+                        + "AND (s.elo_at IS NULL OR s.elo_at < now() - make_interval(hours => ?))")
+                .param(cacheHours).query(Long.class).list();
+    }
+
+    // ---------------------------------------------------------------- FFScouter estimates
+
+    public List<Long> estimateNeeds(Collection<Long> factionIds, int cacheHours) {
+        if (factionIds.isEmpty()) return List.of();
+        return jdbc.sql("SELECT m.torn_id FROM member m LEFT JOIN stat_estimate e ON e.torn_id = m.torn_id "
+                        + "WHERE m.faction_id IN (" + ids(factionIds) + ") " + ACTIVE
+                        + "AND (e.fetched_at IS NULL OR e.fetched_at < now() - make_interval(hours => ?))")
+                .param(cacheHours).query(Long.class).list();
+    }
+
+    /** bsEstimate null = FFScouter has no estimate for this player (cached so we don't re-ask every run). */
+    public void saveEstimate(long tornId, Long bsEstimate, Double fairFight, String source, OffsetDateTime updated) {
         jdbc.sql("""
-                INSERT INTO bsp_prediction (torn_id, tbs, score, result, fetched_at) VALUES (?, ?, ?, ?, now())
-                ON CONFLICT (torn_id) DO UPDATE SET tbs = EXCLUDED.tbs, score = EXCLUDED.score,
-                    result = EXCLUDED.result, fetched_at = now()""")
-                .params(tornId, tbs, score, result).update();
+                INSERT INTO stat_estimate (torn_id, bs_estimate, fair_fight, source, estimate_updated, fetched_at)
+                VALUES (?, ?, ?, ?, ?, now())
+                ON CONFLICT (torn_id) DO UPDATE SET bs_estimate = EXCLUDED.bs_estimate, fair_fight = EXCLUDED.fair_fight,
+                    source = EXCLUDED.source, estimate_updated = EXCLUDED.estimate_updated, fetched_at = now()""")
+                .params(tornId, bsEstimate, fairFight, source, updated).update();
     }
 
     // ---------------------------------------------------------------- reports
@@ -182,10 +202,10 @@ public class DataRepository {
         if (factionIds.isEmpty()) return List.of();
         return jdbc.sql("""
                 SELECT m.faction_id, f.name AS fname, m.torn_id, m.name, m.level, m.position, m.days_in_faction,
-                    m.last_action, s.*, b.tbs, b.result AS bsp_result, b.fetched_at AS bsp_at
+                    m.last_action, s.*, e.bs_estimate, e.source AS bs_source, e.fetched_at AS bs_at
                 FROM member m JOIN faction f ON f.id = m.faction_id
                 LEFT JOIN member_stats s ON s.torn_id = m.torn_id
-                LEFT JOIN bsp_prediction b ON b.torn_id = m.torn_id
+                LEFT JOIN stat_estimate e ON e.torn_id = m.torn_id
                 WHERE m.faction_id IN (""" + ids(factionIds) + ")" + ACTIVE + "ORDER BY f.sort_order NULLS LAST, m.faction_id, m.name")
                 .query(this::mapRow).list();
     }
@@ -225,7 +245,7 @@ public class DataRepository {
         }
         return new MemberRow(rs.getLong("faction_id"), rs.getString("fname"), rs.getLong(3), rs.getString("name"),
                 integer(rs, "level"), rs.getString("position"), integer(rs, "days_in_faction"), rs.getString("last_action"),
-                slots[0], slots[1], slots[2], rs.getString("error"),
-                lng(rs, "tbs"), integer(rs, "bsp_result"), rs.getObject("bsp_at", OffsetDateTime.class));
+                slots[0], slots[1], slots[2], rs.getString("error"), lng(rs, "elo"),
+                lng(rs, "bs_estimate"), rs.getString("bs_source"), rs.getObject("bs_at", OffsetDateTime.class));
     }
 }

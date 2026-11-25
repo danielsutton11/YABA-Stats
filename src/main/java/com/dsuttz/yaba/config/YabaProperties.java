@@ -6,12 +6,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record YabaProperties(
         String apiSecret,
         String tornBase,
-        String bspBase,
-        String bspVersion,
+        String ffsBase,
         int rpmPerPlayer,
         int statsCacheHours,
-        int bspCacheDays,
-        int bspPerSecond,
+        int ffsCacheHours,
+        int ffsBatchSize,
+        int ffsPerSecond,
         String nightlyCron,
         String zone,
         String comment) {
