@@ -18,7 +18,8 @@ public class DataRepository {
 
     public record Faction(long id, String name, String type, boolean yaba, Integer sortOrder,
                           Long leaderId, String leaderName, Long coLeaderId, String coLeaderName,
-                          Integer memberCount, Integer capacity, OffsetDateTime rosterAt, String rosterError) { }
+                          Integer memberCount, Integer capacity, OffsetDateTime rosterAt, String rosterError,
+                          String rankLabel, Integer rankLevel) { }
 
     public record RosterMember(long id, String name, Integer level, String position, Integer daysInFaction,
                                String lastAction, Long lastActionTs, String statusState) {
@@ -87,15 +88,16 @@ public class DataRepository {
 
     @Transactional
     public void saveRoster(long factionId, String name, Long leaderId, Long coLeaderId, Integer capacity,
-                           List<RosterMember> members) {
+                           String rankLabel, Integer rankLevel, List<RosterMember> members) {
         Map<Long, String> names = members.stream().collect(Collectors.toMap(RosterMember::id,
                 m -> m.name() == null ? "" : m.name(), (a, b) -> a));
         jdbc.sql("""
                 UPDATE faction SET name = ?, leader_id = ?, leader_name = ?, co_leader_id = ?, co_leader_name = ?,
-                    member_count = ?, capacity = ?, roster_at = now(), roster_error = NULL WHERE id = ?""")
+                    member_count = ?, capacity = ?, rank_label = ?, rank_level = ?, roster_at = now(), roster_error = NULL
+                WHERE id = ?""")
                 .params(name, leaderId, leaderId == null ? null : names.get(leaderId),
                         coLeaderId, coLeaderId == null ? null : names.get(coLeaderId),
-                        (int) members.stream().filter(m -> !m.fallen()).count(), capacity, factionId).update();
+                        (int) members.stream().filter(m -> !m.fallen()).count(), capacity, rankLabel, rankLevel, factionId).update();
         for (RosterMember m : members) {
             jdbc.sql("""
                     INSERT INTO member (torn_id, faction_id, name, level, position, days_in_faction, last_action,
@@ -234,7 +236,8 @@ public class DataRepository {
         return new Faction(rs.getLong("id"), rs.getString("name"), rs.getString("faction_type"),
                 rs.getBoolean("is_yaba"), integer(rs, "sort_order"), lng(rs, "leader_id"), rs.getString("leader_name"),
                 lng(rs, "co_leader_id"), rs.getString("co_leader_name"), integer(rs, "member_count"),
-                integer(rs, "capacity"), rs.getObject("roster_at", OffsetDateTime.class), rs.getString("roster_error"));
+                integer(rs, "capacity"), rs.getObject("roster_at", OffsetDateTime.class), rs.getString("roster_error"),
+                rs.getString("rank_label"), integer(rs, "rank_level"));
     }
 
     private MemberRow mapRow(ResultSet rs, int i) throws SQLException {

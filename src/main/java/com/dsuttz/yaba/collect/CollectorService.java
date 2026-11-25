@@ -149,6 +149,7 @@ public class CollectorService {
                     JsonNode b = basicJ.has("basic") ? basicJ.get("basic") : basicJ;
                     data.saveRoster(fid, b.path("name").asText(null), longOrNull(b.path("leader_id")),
                             longOrNull(b.path("co_leader_id")), b.path("capacity").isNumber() ? b.get("capacity").asInt() : null,
+                            rankLabel(b.path("rank")), rankLevel(b.path("rank")),
                             parseMembers(membersJ.path("members")));
                 } catch (TornApiException e) {
                     failed.incrementAndGet();
@@ -410,6 +411,25 @@ public class CollectorService {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Torn faction rank as shown in game, e.g. "Platinum II". Accepts the v2 object form
+     * {name, division, level, ...} or a plain string; null when missing.
+     */
+    static String rankLabel(JsonNode r) {
+        if (r == null || r.isMissingNode() || r.isNull()) return null;
+        if (r.isTextual()) return r.asText().isBlank() ? null : r.asText();
+        String name = r.path("name").asText("").trim();
+        if (name.isEmpty()) return null;
+        int div = r.path("division").asInt(0);
+        String[] roman = {"", "I", "II", "III", "IV", "V"};
+        return div > 0 && div < roman.length && !name.equalsIgnoreCase("Unranked") ? name + " " + roman[div] : name;
+    }
+
+    /** Numeric rank level (higher = better rank), used to sort/colour the rank column. */
+    static Integer rankLevel(JsonNode r) {
+        return r != null && r.path("level").isNumber() ? r.get("level").asInt() : null;
+    }
 
     private static Long longOrNull(JsonNode n) {
         return n.isNumber() && n.asLong() > 0 ? n.asLong() : null;

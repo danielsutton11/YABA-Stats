@@ -19,7 +19,7 @@ public class ReportService {
 
     public record FactionInfo(long id, String name, String type, boolean yaba, Long leaderId, String leaderName,
                               Long coLeaderId, String coLeaderName, Integer members, Integer capacity,
-                              String rosterAt, String rosterError) { }
+                              String rosterAt, String rosterError, String rank, Integer rankLevel) { }
 
     public record Report(String generatedAt, RunRepository.Run lastRun, List<FactionInfo> factions, List<Member> members) { }
 
@@ -51,7 +51,7 @@ public class ReportService {
     static FactionInfo info(DataRepository.Faction f) {
         return new FactionInfo(f.id(), f.name(), f.type(), f.yaba(), f.leaderId(), f.leaderName(), f.coLeaderId(),
                 f.coLeaderName(), f.memberCount(), f.capacity(),
-                f.rosterAt() == null ? null : f.rosterAt().toString(), f.rosterError());
+                f.rosterAt() == null ? null : f.rosterAt().toString(), f.rosterError(), f.rankLabel(), f.rankLevel());
     }
 
     static Member member(MemberRow r) {
