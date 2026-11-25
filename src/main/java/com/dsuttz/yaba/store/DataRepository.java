@@ -21,7 +21,14 @@ public class DataRepository {
                           Integer memberCount, Integer capacity, OffsetDateTime rosterAt, String rosterError) { }
 
     public record RosterMember(long id, String name, Integer level, String position, Integer daysInFaction,
-                               String lastAction, Long lastActionTs) { }
+                               String lastAction, Long lastActionTs, String statusState) {
+        public boolean fallen() {
+            return "Fallen".equalsIgnoreCase(statusState);
+        }
+    }
+
+    /** SQL condition: member is not Fallen (Fallen members are left out of everything). */
+    private static final String ACTIVE = " AND COALESCE(m.status_state, '') <> 'Fallen' ";
 
     /** Which stat slots a member still needs. */
     public record StatNeed(long tornId, boolean now, boolean d30, boolean d90) { }
@@ -88,18 +95,18 @@ public class DataRepository {
                     member_count = ?, capacity = ?, roster_at = now(), roster_error = NULL WHERE id = ?""")
                 .params(name, leaderId, leaderId == null ? null : names.get(leaderId),
                         coLeaderId, coLeaderId == null ? null : names.get(coLeaderId),
-                        members.size(), capacity, factionId).update();
+                        (int) members.stream().filter(m -> !m.fallen()).count(), capacity, factionId).update();
         for (RosterMember m : members) {
             jdbc.sql("""
                     INSERT INTO member (torn_id, faction_id, name, level, position, days_in_faction, last_action,
-                        last_action_ts, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
+                        last_action_ts, status_state, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, now())
                     ON CONFLICT (torn_id) DO UPDATE SET faction_id = EXCLUDED.faction_id, name = EXCLUDED.name,
                         level = EXCLUDED.level, position = EXCLUDED.position,
                         days_in_faction = EXCLUDED.days_in_faction, last_action = EXCLUDED.last_action,
-                        last_action_ts = EXCLUDED.last_action_ts, updated_at = now()""")
+                        last_action_ts = EXCLUDED.last_action_ts, status_state = EXCLUDED.status_state, updated_at = now()""")
                     .params(m.id(), factionId, m.name(), m.level(), m.position(), m.daysInFaction(),
-                            m.lastAction(), m.lastActionTs()).update();
+                            m.lastAction(), m.lastActionTs(), m.statusState()).update();
         }
         // people who left this faction
         String keep = members.isEmpty() ? "-1" : members.stream().map(m -> String.valueOf(m.id())).collect(Collectors.joining(","));
@@ -121,7 +128,7 @@ public class DataRepository {
                     (s.at_30  IS NULL OR s.at_30  < now() - make_interval(hours => ?)) AS a,
                     (s.at_90  IS NULL OR s.at_90  < now() - make_interval(hours => ?)) AS b
                 FROM member m LEFT JOIN member_stats s ON s.torn_id = m.torn_id
-                WHERE m.faction_id IN (""" + ids(factionIds) + ")")
+                WHERE m.faction_id IN (""" + ids(factionIds) + ")" + ACTIVE)
                 .params(cacheHours, cacheHours, cacheHours)
                 .query((rs, i) -> new StatNeed(rs.getLong(1), rs.getBoolean(2), rs.getBoolean(3), rs.getBoolean(4)))
                 .list().stream().filter(n -> n.now() || n.d30() || n.d90()).toList();
@@ -156,7 +163,7 @@ public class DataRepository {
     public List<Long> bspNeeds(Collection<Long> factionIds, int cacheDays) {
         if (factionIds.isEmpty()) return List.of();
         return jdbc.sql("SELECT m.torn_id FROM member m LEFT JOIN bsp_prediction b ON b.torn_id = m.torn_id "
-                        + "WHERE m.faction_id IN (" + ids(factionIds) + ") "
+                        + "WHERE m.faction_id IN (" + ids(factionIds) + ") " + ACTIVE
                         + "AND (b.fetched_at IS NULL OR b.fetched_at < now() - make_interval(days => ?))")
                 .param(cacheDays).query(Long.class).list();
     }
@@ -179,7 +186,7 @@ public class DataRepository {
                 FROM member m JOIN faction f ON f.id = m.faction_id
                 LEFT JOIN member_stats s ON s.torn_id = m.torn_id
                 LEFT JOIN bsp_prediction b ON b.torn_id = m.torn_id
-                WHERE m.faction_id IN (""" + ids(factionIds) + ") ORDER BY f.sort_order NULLS LAST, m.faction_id, m.name")
+                WHERE m.faction_id IN (""" + ids(factionIds) + ")" + ACTIVE + "ORDER BY f.sort_order NULLS LAST, m.faction_id, m.name")
                 .query(this::mapRow).list();
     }
 

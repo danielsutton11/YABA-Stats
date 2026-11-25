@@ -163,7 +163,8 @@ public class CollectorService {
                 x.path("position").asText(null),
                 x.path("days_in_faction").isNumber() ? x.get("days_in_faction").asInt() : null,
                 la.path("relative").asText(null),
-                la.path("timestamp").isNumber() ? la.get("timestamp").asLong() : null);
+                la.path("timestamp").isNumber() ? la.get("timestamp").asLong() : null,
+                x.path("status").path("state").asText(null));
     }
 
     // ------------------------------------------------------------------ phase 2: personal stats

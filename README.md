@@ -14,6 +14,8 @@ Google Sheet. Spring Boot 3.5 / Java 21 / PostgreSQL, deployed on Railway.
   player gets 80 calls a minute (`RPM_PER_PLAYER`), shared by every run that's going.
 - **Caching:** member stats fetched in the last 20 hours and BSP results from the last 5 days are
   reused. If a run is interrupted, for example by a redeploy, the next run picks up from there.
+- **Fallen players:** members whose Torn status is Fallen are skipped. They aren't fetched, aren't counted in member
+  totals, and don't appear in reports. The status comes from the faction roster, so this costs no extra calls.
 - **BSP:** only keys with an active BSP subscription are used for estimates. Subscriptions are
   re-checked every 12 hours.
 

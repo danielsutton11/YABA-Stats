@@ -35,6 +35,10 @@ class ParsingTest {
         var obj = mapper.readTree("{\"7\":{\"name\":\"B\",\"level\":2}}");
         assertEquals("1 hour ago", CollectorServiceTestAccess.members(arr).getFirst().lastAction());
         assertEquals(7L, CollectorServiceTestAccess.members(obj).getFirst().id());
+        var fallen = mapper.readTree("[{\"id\":3243467,\"name\":\"Noregr122\",\"status\":{\"description\":\"Fallen\","
+                + "\"details\":\"Resting in Peace\",\"state\":\"Fallen\",\"color\":\"red\",\"until\":null}}]");
+        assertTrue(CollectorServiceTestAccess.members(fallen).getFirst().fallen());
+        assertFalse(CollectorServiceTestAccess.members(arr).getFirst().fallen());
     }
 
     @Test
