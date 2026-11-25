@@ -31,12 +31,26 @@ For 74 factions (~5,900 members), 5 keys from 5 players and an empty cache, a ru
    |---|---|
    | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
    | `YABA_API_SECRET` | a long random string; the sheet sends it with every request |
+   | `YABA_KEY_SECRET` | a different long random string (16+ characters); it encrypts the stored Torn API keys |
 
 4. **Make it reachable.** Go to Settings → Networking → Generate Domain and copy the URL.
 5. **Connect the sheet.** In the Google Sheet, use YABA Stats → 2. Connect to Railway and paste the
    URL and secret. Then use 3. Add Torn API keys.
 
 The database tables are created on first start (Flyway).
+
+### API key encryption
+
+Torn API keys are stored encrypted with AES-256-GCM. The encryption key comes from `YABA_KEY_SECRET`.
+Each stored key also has an HMAC fingerprint, so duplicate keys can be spotted without decrypting
+anything. If any keys are still in plain text (from before encryption was added), the service
+encrypts them on its next start and blanks the plain-text copy.
+
+- The service won't start without `YABA_KEY_SECRET`.
+- Keep `YABA_KEY_SECRET` safe. If you change or lose it, the stored keys can't be read any more,
+  and you'll need to add them again from the sheet.
+- Encryption protects the database and its backups. Anyone who can open the Railway project can
+  read the variable as well, so keep access to the project locked down.
 
 ### Optional variables
 
