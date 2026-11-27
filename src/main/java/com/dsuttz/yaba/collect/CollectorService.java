@@ -155,7 +155,7 @@ public class CollectorService {
                     }
                     data.saveRoster(fid, b.path("name").asText(null), longOrNull(b.path("leader_id")),
                             longOrNull(b.path("co_leader_id")), b.path("capacity").isNumber() ? b.get("capacity").asInt() : null,
-                            rankLabel(b.path("rank")), rankLevel(b.path("rank")), territories,
+                            rankLabel(b.path("rank")), rankLevel(b.path("rank")), territories, longOrNull(b.path("respect")),
                             parseMembers(membersJ.path("members")));
                 } catch (TornApiException e) {
                     failed.incrementAndGet();
