@@ -147,9 +147,15 @@ public class CollectorService {
                     JsonNode basicJ = call("/faction/" + fid + "/basic");
                     JsonNode membersJ = call("/faction/" + fid + "/members?striptags=true");
                     JsonNode b = basicJ.has("basic") ? basicJ.get("basic") : basicJ;
+                    Integer territories = null;   // optional: a failure here doesn't fail the roster
+                    try {
+                        territories = territoryCount(call("/faction/" + fid + "/territory"));
+                    } catch (TornApiException e) {
+                        log.warn("Territories for faction {}: API error {} {}", fid, e.code(), e.getMessage());
+                    }
                     data.saveRoster(fid, b.path("name").asText(null), longOrNull(b.path("leader_id")),
                             longOrNull(b.path("co_leader_id")), b.path("capacity").isNumber() ? b.get("capacity").asInt() : null,
-                            rankLabel(b.path("rank")), rankLevel(b.path("rank")),
+                            rankLabel(b.path("rank")), rankLevel(b.path("rank")), territories,
                             parseMembers(membersJ.path("members")));
                 } catch (TornApiException e) {
                     failed.incrementAndGet();
@@ -424,6 +430,14 @@ public class CollectorService {
         int div = r.path("division").asInt(0);
         String[] roman = {"", "I", "II", "III", "IV", "V"};
         return div > 0 && div < roman.length && !name.equalsIgnoreCase("Unranked") ? name + " " + roman[div] : name;
+    }
+
+    /** Territories held: v2 returns {"territory": [...]}; also accepts an id-keyed object. Null if absent. */
+    static Integer territoryCount(JsonNode json) {
+        JsonNode t = json == null ? null : json.path("territory");
+        if (t == null || t.isMissingNode() || t.isNull()) return null;
+        if (t.isArray() || t.isObject()) return t.size();
+        return null;
     }
 
     /** Numeric rank level (higher = better rank), used to sort/colour the rank column. */
